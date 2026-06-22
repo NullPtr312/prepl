@@ -20,17 +20,62 @@ class PlotState:
     y: list[str] = field(default_factory=list)
     xlabel: str | None = None
     ylabel: str | None = None
+    title: str | None = None
+    legend: bool = True
+    grid: bool = True
     style: str = "science"
     data: Optional[pd.DataFrame] = None
 
 class PlotREPL:
+
+    # METHODS
     def __init__(self):
         self.state = PlotState()
+        self.commands = {
+            "data": self.data_cmd,
+            "plot": self.plot_cmd,
+            "set": self.set_cmd,
+            "state": self.state_cmd,
+            "exit": self.exit_cmd,
+        }
 
     def run(self):
         while True:
             cmd = input("PREPL> ").strip()
             self.handle(cmd)
+
+    def require_args(self, args, n, usage):
+        if len(args) < n:
+            print(f"Not enough arguments (requires {n}). Usage: {usage}")
+            return False
+        return True
+
+    def require_data(self):
+        if self.state.data is None:
+            print("Error: No data loaded. Use 'data load <file>' to load data")
+            return False
+        return True
+
+    def handle(self, instruction: str):
+        try:
+            parts = shlex.split(instruction) 
+            if not parts:
+                return
+
+            cmd = parts[0]
+            args = parts[1:]
+
+            if cmd in self.commands:
+                self.commands[cmd](args)
+            else:
+                print(f"Unknown command: {cmd}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    # COMMANDS
+
+    def exit_cmd(self, args):
+        exit(0)
 
     def save_state(self, file):
         with open(file, "w") as f:
@@ -41,51 +86,54 @@ class PlotREPL:
             data = json.load(f)
         self.state = PlotState(**data)
 
-    def handle(self, cmd: str):
-        parts = shlex.split(cmd) 
-        if not parts:
+    def state_cmd(self, args):
+        if not self.require_args(args, 1, "save, load, reset"):
             return
 
-        match parts[0]:
-            case "data":
-                self.data_cmd(parts[1:])
-            case "plot":
-                if len(parts) < 2:
-                    self.plot("Unnamed")
-                else:
-                    self.plot(parts[1])
-            case "reset":
-                self.reset()
-            case "set":
-                self.set_cmd(parts[1:])
+        match args[0]:
             case "save":
-                self.save_state("save.json")
+                if not self.require_args(args, 2, "state save <filename>"):
+                    return
+                self.save_state(args[1])
             case "load":
-                self.load_state("save.json")
-                self.loadData()
-            case "exit":
-                exit(0)
-            case _:
-                print("Unknown Command")
+                if not self.require_args(args, 2, "state load <filename>"):
+                    return
+                self.load_state(args[1])
+            case "reset":
+                self.state = PlotState()
+                print("State reset")
 
     def data_cmd(self, args):
+
+        if not (self.require_args(args, 1, "open, reload, view, select")):
+            return
+
         match args[0]:
-            case "load":
+            case "open":
+                if not self.require_args(args, 2, "data open <file>"):
+                    return
+
                 self.state.dataPath = INPUT_DIR / args[1]
                 print("Data path set to " + str(self.state.dataPath))
+                
                 try:
                     self.loadData()
                 except Exception:
-                    print("Could not load data")
+                    print(f"Could not load data at {self.state.dataPath}.")
+
+            case "reload":
+                try:
+                    self.loadData()
+                except Exception:
+                    print(f"Could not load data at {self.state.dataPath}.")
+
             case "view":
-                if self.state.data is None:
-                    print("Data not loaded")
+                if not self.require_data():
                     return
                 print(f"Columns: {list(self.state.data.columns)}")
-            case "select":
 
-                if self.state.data is None:
-                    print("No data selected")
+            case "select":
+                if not (self.require_data() and self.require_args(args, 3, "data select <x> <y1> <y2>...")):
                     return
 
                 cols = self.state.data.columns
@@ -105,27 +153,43 @@ class PlotREPL:
                 self.state.x = x
                 self.state.y = ys
 
-            case "help":
-                print("L")
             case _:
                 print("Unknown Command")
 
     def set_cmd(self, args):
+        if not self.require_args(args, 2, "xlabel, ylabel, style, title, grid, legend\nset <value> <argument>"):
+            return 
+
         match args[0]:
             case "xlabel":
                 self.state.xlabel = args[1]
             case "ylabel":
                 self.state.ylabel = args[1]
+            case "title":
+                self.state.title = args[1]
+            case "grid":
+                if args[1] == "true":
+                    self.state.grid = True
+                elif args[1] == "false":
+                    self.state.grid = False
+                else:
+                    print("Use: set grid true/false")
+            case "legend":
+                if args[1] == "true":
+                    self.state.legend = True
+                elif args[1] == "false":
+                    self.state.legend = False
+                else:
+                    print("Use: set legend true/false")
+            case "style":
+                self.state.style = args[1]
 
     def loadData(self):
         self.state.data = pd.read_csv(self.state.dataPath)
 
-    def plot(self, fileName):
+    def plot_cmd(self, args):
 
-        try:
-            self.loadData()
-        except Exception:
-            print("Could not load data")
+        if not (self.require_data() and self.require_args(args, 1, "plot <outputfile> | plot show")):
             return
 
         data = self.state.data
@@ -138,12 +202,20 @@ class PlotREPL:
 
         plt.xlabel(self.state.xlabel)
         plt.ylabel(self.state.ylabel)
-        plt.legend()
+        plt.title(self.state.title)
+        if(self.state.legend):
+            plt.legend()
+        if(self.state.grid):
+            plt.grid()
 
-        saveLocation = OUTPUT_DIR / fileName
 
-        plt.savefig(saveLocation, bbox_inches="tight")
-        print(f"Saved {saveLocation}")
+        saveLocation = OUTPUT_DIR / args[0]
+
+        if(args[0] == "show"):
+            plt.show()
+        else:
+            plt.savefig(saveLocation, bbox_inches="tight")
+            print(f"Saved {saveLocation}")
 
 if __name__ == "__main__":
     plotter = PlotREPL()
